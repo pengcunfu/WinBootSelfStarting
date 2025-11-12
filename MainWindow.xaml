@@ -27,7 +27,7 @@
                 <DataGridTextColumn Header="名称" Binding="{Binding Name}" Width="200" />
                 <DataGridTextColumn Header="命令/路径" Binding="{Binding Command}" Width="*" />
                 <DataGridTextColumn Header="位置" Binding="{Binding Location}" Width="150" />
-                <DataGridCheckBoxColumn Header="已启用" Binding="{Binding IsEnabled}" Width="80" />
+                <DataGridCheckBoxColumn Header="已启用" Binding="{Binding IsEnabled, Mode=OneWay}" Width="80" />
             </DataGrid.Columns>
         </DataGrid>
 

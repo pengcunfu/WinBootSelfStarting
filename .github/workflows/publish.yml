@@ -36,10 +36,23 @@ jobs:
           name: WinBootSelfStarting-publish
           path: publish
 
-      - name: Create GitHub Release and attach artifact
+      - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: ncipollo/release-action@v1
+        id: create_release
+        uses: actions/create-release@v1
         with:
-          tag: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          files: publish/**
+          tag_name: ${{ github.ref_name }}
+          release_name: ${{ github.ref_name }}
+          body: |
+            Automated release for ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+
+      - name: Upload release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: publish
+          asset_name: WinBootSelfStarting-publish.zip
+          asset_content_type: application/zip

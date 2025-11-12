@@ -6,7 +6,34 @@
         xmlns:local="clr-namespace:WinBootSelfStarting"
         mc:Ignorable="d"
         Title="MainWindow" Height="450" Width="800">
-    <Grid>
+    <Grid Margin="8">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Orientation="Horizontal" Grid.Row="0" Margin="0,0,0,8">
+            <TextBox x:Name="SearchBox" Width="300" Margin="0,0,8,0" />
+            <Button x:Name="RefreshButton" Content="刷新" Click="RefreshButton_Click" Margin="0,0,8,0" />
+            <Button x:Name="AddButton" Content="添加" Click="AddButton_Click" Margin="0,0,8,0" />
+            <Button x:Name="EnableButton" Content="启用" Click="EnableButton_Click" Margin="0,0,8,0" />
+            <Button x:Name="DisableButton" Content="禁用" Click="DisableButton_Click" Margin="0,0,8,0" />
+            <Button x:Name="RemoveButton" Content="删除" Click="RemoveButton_Click" />
+        </StackPanel>
+
+        <DataGrid x:Name="EntriesGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="名称" Binding="{Binding Name}" Width="200" />
+                <DataGridTextColumn Header="命令/路径" Binding="{Binding Command}" Width="*" />
+                <DataGridTextColumn Header="位置" Binding="{Binding Location}" Width="150" />
+                <DataGridCheckBoxColumn Header="已启用" Binding="{Binding IsEnabled}" Width="80" />
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <StatusBar Grid.Row="2" Margin="0,8,0,0">
+            <TextBlock x:Name="StatusText" />
+        </StatusBar>
 
     </Grid>
 </Window>

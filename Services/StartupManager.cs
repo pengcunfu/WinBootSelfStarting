@@ -2,6 +2,8 @@ using Microsoft.Win32;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Management;
+using System.Linq;
 using WinBootSelfStarting.Models;
 
 namespace WinBootSelfStarting.Services
@@ -72,7 +74,172 @@ namespace WinBootSelfStarting.Services
             }
             catch { }
 
+            // List Windows Services with auto start
+            try
+            {
+                var services = ListAutoStartServices();
+                list.AddRange(services);
+            }
+            catch { }
+
+            // List Scheduled Tasks that run at logon or startup
+            try
+            {
+                var tasks = ListScheduledTasks();
+                list.AddRange(tasks);
+            }
+            catch { }
+
             return list;
+        }
+
+        private static List<StartupEntry> ListAutoStartServices()
+        {
+            var list = new List<StartupEntry>();
+            try
+            {
+                using (var searcher = new ManagementObjectSearcher("SELECT * FROM Win32_Service"))
+                {
+                    foreach (ManagementObject service in searcher.Get())
+                    {
+                        var startMode = service["StartMode"]?.ToString();
+                        var name = service["Name"]?.ToString() ?? "";
+                        var displayName = service["DisplayName"]?.ToString() ?? "";
+                        var pathName = service["PathName"]?.ToString() ?? "";
+                        var state = service["State"]?.ToString() ?? "";
+
+                        // Only include auto-start services
+                        if (startMode == "Auto" || startMode == "Automatic")
+                        {
+                            list.Add(new StartupEntry
+                            {
+                                Id = name,
+                                Name = displayName,
+                                Command = pathName,
+                                Location = StartupLocation.Service,
+                                ServiceStatus = state,
+                                StartType = startMode
+                            });
+                        }
+                    }
+                }
+            }
+            catch { }
+            return list;
+        }
+
+        private static List<StartupEntry> ListScheduledTasks()
+        {
+            var list = new List<StartupEntry>();
+            try
+            {
+                // Use schtasks.exe to list scheduled tasks
+                var process = new System.Diagnostics.Process
+                {
+                    StartInfo = new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "schtasks.exe",
+                        Arguments = "/Query /FO CSV /V",
+                        RedirectStandardOutput = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    }
+                };
+
+                process.Start();
+                var output = process.StandardOutput.ReadToEnd();
+                process.WaitForExit();
+
+                // Parse CSV output
+                var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                if (lines.Length < 2) return list;
+
+                // Skip header line
+                for (int i = 1; i < lines.Length; i++)
+                {
+                    var parts = ParseCsvLine(lines[i]);
+                    if (parts.Length < 2) continue;
+
+                    var taskName = parts[0].Trim('"');
+                    var status = parts.Length > 3 ? parts[3].Trim('"') : "";
+
+                    // Filter for logon/startup tasks
+                    var taskInfo = GetTaskDetails(taskName);
+                    if (taskInfo != null && (taskInfo.Contains("LOGON", StringComparison.OrdinalIgnoreCase) ||
+                                             taskInfo.Contains("STARTUP", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        list.Add(new StartupEntry
+                        {
+                            Id = taskName,
+                            Name = taskName,
+                            Command = taskInfo,
+                            Location = StartupLocation.ScheduledTask,
+                            ServiceStatus = status
+                        });
+                    }
+                }
+            }
+            catch { }
+            return list;
+        }
+
+        private static string[] ParseCsvLine(string line)
+        {
+            var result = new List<string>();
+            var current = "";
+            var inQuotes = false;
+
+            for (int i = 0; i < line.Length; i++)
+            {
+                var c = line[i];
+                if (c == '"')
+                {
+                    inQuotes = !inQuotes;
+                    current += c;
+                }
+                else if (c == ',' && !inQuotes)
+                {
+                    result.Add(current);
+                    current = "";
+                }
+                else
+                {
+                    current += c;
+                }
+            }
+
+            if (current.Length > 0)
+                result.Add(current);
+
+            return result.ToArray();
+        }
+
+        private static string? GetTaskDetails(string taskName)
+        {
+            try
+            {
+                var process = new System.Diagnostics.Process
+                {
+                    StartInfo = new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "schtasks.exe",
+                        Arguments = $"/Query /TN \"{taskName}\" /FO LIST /V",
+                        RedirectStandardOutput = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    }
+                };
+
+                process.Start();
+                var output = process.StandardOutput.ReadToEnd();
+                process.WaitForExit();
+
+                return output;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         public static bool AddRegistryEntry(string name, string command)
@@ -122,6 +289,10 @@ namespace WinBootSelfStarting.Services
                     case StartupLocation.DisabledFolder:
                         if (File.Exists(entry.Command)) File.Delete(entry.Command);
                         break;
+                    case StartupLocation.Service:
+                        return DeleteService(entry.Id);
+                    case StartupLocation.ScheduledTask:
+                        return DeleteScheduledTask(entry.Id);
                 }
                 return true;
             }
@@ -139,7 +310,7 @@ namespace WinBootSelfStarting.Services
                         using (var key = Registry.CurrentUser.OpenSubKey(RunKey, true))
                         {
                             var val = key?.GetValue(entry.Id);
-                            if (val != null)
+                            if (val != null && key != null)
                             {
                                 using (var dk = Registry.CurrentUser.CreateSubKey(DisabledKey))
                                 {
@@ -154,6 +325,10 @@ namespace WinBootSelfStarting.Services
                         var dest = Path.Combine(DisabledStartupFolder, Path.GetFileName(entry.Command));
                         if (File.Exists(entry.Command)) File.Move(entry.Command, dest, true);
                         break;
+                    case StartupLocation.Service:
+                        return DisableService(entry.Id);
+                    case StartupLocation.ScheduledTask:
+                        return DisableScheduledTask(entry.Id);
                     default:
                         // already disabled or unknown
                         break;
@@ -173,7 +348,7 @@ namespace WinBootSelfStarting.Services
                         using (var dk = Registry.CurrentUser.OpenSubKey(DisabledKey, true))
                         {
                             var val = dk?.GetValue(entry.Id);
-                            if (val != null)
+                            if (val != null && dk != null)
                             {
                                 using (var key = Registry.CurrentUser.CreateSubKey(RunKey))
                                 {
@@ -193,10 +368,107 @@ namespace WinBootSelfStarting.Services
                         }
                         break;
                     default:
+                        // Services and scheduled tasks cannot be enabled (they're already running)
                         // already enabled or unknown
                         break;
                 }
                 return true;
+            }
+            catch { return false; }
+        }
+
+        // Service management methods
+        private static bool DisableService(string serviceName)
+        {
+            try
+            {
+                var process = new System.Diagnostics.Process
+                {
+                    StartInfo = new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "sc",
+                        Arguments = $"config \"{serviceName}\" start= demand",
+                        RedirectStandardOutput = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        Verb = "runas"
+                    }
+                };
+
+                process.Start();
+                process.WaitForExit();
+                return process.ExitCode == 0;
+            }
+            catch { return false; }
+        }
+
+        private static bool DeleteService(string serviceName)
+        {
+            try
+            {
+                var process = new System.Diagnostics.Process
+                {
+                    StartInfo = new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "sc",
+                        Arguments = $"delete \"{serviceName}\"",
+                        RedirectStandardOutput = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        Verb = "runas"
+                    }
+                };
+
+                process.Start();
+                process.WaitForExit();
+                return process.ExitCode == 0;
+            }
+            catch { return false; }
+        }
+
+        // Scheduled task management methods
+        private static bool DisableScheduledTask(string taskName)
+        {
+            try
+            {
+                var process = new System.Diagnostics.Process
+                {
+                    StartInfo = new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "schtasks.exe",
+                        Arguments = $"/Change /TN \"{taskName}\" /DISABLE",
+                        RedirectStandardOutput = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    }
+                };
+
+                process.Start();
+                process.WaitForExit();
+                return process.ExitCode == 0;
+            }
+            catch { return false; }
+        }
+
+        private static bool DeleteScheduledTask(string taskName)
+        {
+            try
+            {
+                var process = new System.Diagnostics.Process
+                {
+                    StartInfo = new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "schtasks.exe",
+                        Arguments = $"/Delete /TN \"{taskName}\" /F",
+                        RedirectStandardOutput = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    }
+                };
+
+                process.Start();
+                process.WaitForExit();
+                return process.ExitCode == 0;
             }
             catch { return false; }
         }

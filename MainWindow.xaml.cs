@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
@@ -14,112 +14,329 @@ namespace WinBootSelfStarting
     /// </summary>
     public partial class MainWindow : Window
     {
-        private List<StartupEntry> _allEntries = new();
+        private List<StartupEntry> _startupEntries = new();
+        private List<StartupEntry> _serviceEntries = new();
+        private List<StartupEntry> _taskEntries = new();
 
         public MainWindow()
         {
             InitializeComponent();
-            SearchBox.TextChanged += SearchBox_TextChanged;
-            LoadEntries();
+
+            // Add search text changed handlers
+            StartupSearchBox.TextChanged += (s, e) => UpdateStartupGrid();
+            ServiceSearchBox.TextChanged += (s, e) => UpdateServiceGrid();
+            TaskSearchBox.TextChanged += (s, e) => UpdateTaskGrid();
+
+            LoadAllEntries();
         }
 
         private void SetStatus(string text)
         {
-            StatusText.Text = text;
+            if (StatusText != null)
+                StatusText.Text = text;
         }
 
-        private void LoadEntries()
+        private void LoadAllEntries()
         {
             try
             {
-                _allEntries = StartupManager.ListEntries();
-                UpdateGrid();
-                SetStatus($"已加载 {_allEntries.Count} 条启动项");
+                var allEntries = StartupManager.ListEntries();
+
+                // Split entries by type
+                _startupEntries = allEntries.Where(e =>
+                    e.Location == StartupLocation.Registry ||
+                    e.Location == StartupLocation.StartupFolder ||
+                    e.Location == StartupLocation.DisabledRegistry ||
+                    e.Location == StartupLocation.DisabledFolder).ToList();
+
+                _serviceEntries = allEntries.Where(e => e.Location == StartupLocation.Service).ToList();
+                _taskEntries = allEntries.Where(e => e.Location == StartupLocation.ScheduledTask).ToList();
+
+                UpdateStartupGrid();
+                UpdateServiceGrid();
+                UpdateTaskGrid();
+
+                SetStatus($"已加载 启动项:{_startupEntries.Count} 服务:{_serviceEntries.Count} 计划任务:{_taskEntries.Count}");
             }
             catch (Exception ex)
             {
-                MessageBox.Show("加载启动项失败: " + ex.Message);
+                MessageBox.Show("加载数据失败: " + ex.Message, "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
-        private void UpdateGrid()
+        private void UpdateStartupGrid()
         {
-            var q = SearchBox.Text?.Trim();
-            if (string.IsNullOrEmpty(q))
+            if (StartupGrid == null) return;
+
+            var q = StartupSearchBox?.Text?.Trim();
+            var filtered = _startupEntries.AsEnumerable();
+
+            if (!string.IsNullOrEmpty(q))
             {
-                EntriesGrid.ItemsSource = _allEntries.OrderBy(e => e.Name);
+                filtered = filtered.Where(e =>
+                    (e.Name ?? "").IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    (e.Command ?? "").IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0);
             }
-            else
+
+            var list = filtered.OrderBy(e => e.Name).ToList();
+            StartupGrid.ItemsSource = list;
+            SetStatus($"启动项: 显示 {list.Count} / {_startupEntries.Count} 条");
+        }
+
+        private void UpdateServiceGrid()
+        {
+            if (ServiceGrid == null) return;
+
+            var q = ServiceSearchBox?.Text?.Trim();
+            var filtered = _serviceEntries.AsEnumerable();
+
+            if (!string.IsNullOrEmpty(q))
             {
-                var filtered = _allEntries.Where(e => (e.Name ?? "").IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0 || (e.Command ?? "").IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0);
-                EntriesGrid.ItemsSource = filtered.OrderBy(e => e.Name);
+                filtered = filtered.Where(e =>
+                    (e.Name ?? "").IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    (e.Id ?? "").IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    (e.Command ?? "").IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0);
             }
+
+            var list = filtered.OrderBy(e => e.Name).ToList();
+            ServiceGrid.ItemsSource = list;
+            SetStatus($"服务: 显示 {list.Count} / {_serviceEntries.Count} 条");
         }
 
-        private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
+        private void UpdateTaskGrid()
         {
-            UpdateGrid();
+            if (TaskGrid == null) return;
+
+            var q = TaskSearchBox?.Text?.Trim();
+            var filtered = _taskEntries.AsEnumerable();
+
+            if (!string.IsNullOrEmpty(q))
+            {
+                filtered = filtered.Where(e =>
+                    (e.Name ?? "").IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0);
+            }
+
+            var list = filtered.OrderBy(e => e.Name).ToList();
+            TaskGrid.ItemsSource = list;
+            SetStatus($"计划任务: 显示 {list.Count} / {_taskEntries.Count} 条");
         }
 
-        private void RefreshButton_Click(object sender, RoutedEventArgs e)
+        private void MainTabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            LoadEntries();
+            if (MainTabControl.SelectedItem == StartupTab)
+                UpdateStartupGrid();
+            else if (MainTabControl.SelectedItem == ServiceTab)
+                UpdateServiceGrid();
+            else if (MainTabControl.SelectedItem == TaskTab)
+                UpdateTaskGrid();
         }
 
-        private void AddButton_Click(object sender, RoutedEventArgs e)
+        // Startup Tab handlers
+        private void StartupRefreshButton_Click(object sender, RoutedEventArgs e)
         {
-            var dlg = new Microsoft.Win32.OpenFileDialog();
-            dlg.Filter = "Executable files (*.exe)|*.exe|All files (*.*)|*.*";
+            LoadAllEntries();
+        }
+
+        private void StartupAddButton_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new Microsoft.Win32.OpenFileDialog
+            {
+                Filter = "Executable files (*.exe)|*.exe|All files (*.*)|*.*"
+            };
+
             if (dlg.ShowDialog(this) == true)
             {
                 var path = dlg.FileName;
                 var name = System.IO.Path.GetFileNameWithoutExtension(path);
                 var cmd = '"' + path + '"';
                 var ok = StartupManager.AddRegistryEntry(name, cmd);
+
                 if (ok)
                 {
-                    LoadEntries();
+                    LoadAllEntries();
                     SetStatus("已添加启动项: " + name);
                 }
                 else
                 {
-                    MessageBox.Show("添加启动项失败");
+                    MessageBox.Show("添加启动项失败", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
             }
         }
 
-        private StartupEntry? GetSelected()
+        private void StartupEnableButton_Click(object sender, RoutedEventArgs e)
         {
-            return EntriesGrid.SelectedItem as StartupEntry;
-        }
+            var sel = StartupGrid.SelectedItem as StartupEntry;
+            if (sel == null)
+            {
+                MessageBox.Show("请先选择一个启动项", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
 
-        private void EnableButton_Click(object sender, RoutedEventArgs e)
-        {
-            var sel = GetSelected();
-            if (sel == null) return;
             var ok = StartupManager.EnableEntry(sel);
-            if (ok) { LoadEntries(); SetStatus("已启用: " + sel.Name); }
-            else MessageBox.Show("启用失败");
+            if (ok)
+            {
+                LoadAllEntries();
+                SetStatus("已启用: " + sel.Name);
+            }
+            else
+            {
+                MessageBox.Show("启用失败", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
-        private void DisableButton_Click(object sender, RoutedEventArgs e)
+        private void StartupDisableButton_Click(object sender, RoutedEventArgs e)
         {
-            var sel = GetSelected();
-            if (sel == null) return;
+            var sel = StartupGrid.SelectedItem as StartupEntry;
+            if (sel == null)
+            {
+                MessageBox.Show("请先选择一个启动项", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
             var ok = StartupManager.DisableEntry(sel);
-            if (ok) { LoadEntries(); SetStatus("已禁用: " + sel.Name); }
-            else MessageBox.Show("禁用失败");
+            if (ok)
+            {
+                LoadAllEntries();
+                SetStatus("已禁用: " + sel.Name);
+            }
+            else
+            {
+                MessageBox.Show("禁用失败", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
-        private void RemoveButton_Click(object sender, RoutedEventArgs e)
+        private void StartupRemoveButton_Click(object sender, RoutedEventArgs e)
         {
-            var sel = GetSelected();
-            if (sel == null) return;
+            var sel = StartupGrid.SelectedItem as StartupEntry;
+            if (sel == null)
+            {
+                MessageBox.Show("请先选择一个启动项", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
             var res = MessageBox.Show($"确认删除启动项 '{sel.Name}' ?", "确认", MessageBoxButton.YesNo, MessageBoxImage.Question);
             if (res != MessageBoxResult.Yes) return;
+
             var ok = StartupManager.RemoveEntry(sel);
-            if (ok) { LoadEntries(); SetStatus("已删除: " + sel.Name); }
-            else MessageBox.Show("删除失败");
+            if (ok)
+            {
+                LoadAllEntries();
+                SetStatus("已删除: " + sel.Name);
+            }
+            else
+            {
+                MessageBox.Show("删除失败", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // Service Tab handlers
+        private void ServiceRefreshButton_Click(object sender, RoutedEventArgs e)
+        {
+            LoadAllEntries();
+        }
+
+        private void ServiceDisableButton_Click(object sender, RoutedEventArgs e)
+        {
+            var sel = ServiceGrid.SelectedItem as StartupEntry;
+            if (sel == null)
+            {
+                MessageBox.Show("请先选择一个服务", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var res = MessageBox.Show($"确认将服务 '{sel.Name}' 的启动类型改为手动?\n\n服务名: {sel.Id}",
+                "确认", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (res != MessageBoxResult.Yes) return;
+
+            var ok = StartupManager.DisableEntry(sel);
+            if (ok)
+            {
+                LoadAllEntries();
+                SetStatus("已禁用服务自启: " + sel.Name);
+            }
+            else
+            {
+                MessageBox.Show("禁用失败，请确保程序以管理员身份运行", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void ServiceDeleteButton_Click(object sender, RoutedEventArgs e)
+        {
+            var sel = ServiceGrid.SelectedItem as StartupEntry;
+            if (sel == null)
+            {
+                MessageBox.Show("请先选择一个服务", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var res = MessageBox.Show($"警告：确认要删除服务 '{sel.Name}' ?\n\n服务名: {sel.Id}\n\n删除系统服务可能导致系统不稳定，请谨慎操作！",
+                "危险操作", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            if (res != MessageBoxResult.Yes) return;
+
+            var ok = StartupManager.RemoveEntry(sel);
+            if (ok)
+            {
+                LoadAllEntries();
+                SetStatus("已删除服务: " + sel.Name);
+            }
+            else
+            {
+                MessageBox.Show("删除失败，请确保程序以管理员身份运行", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // Task Tab handlers
+        private void TaskRefreshButton_Click(object sender, RoutedEventArgs e)
+        {
+            LoadAllEntries();
+        }
+
+        private void TaskDisableButton_Click(object sender, RoutedEventArgs e)
+        {
+            var sel = TaskGrid.SelectedItem as StartupEntry;
+            if (sel == null)
+            {
+                MessageBox.Show("请先选择一个计划任务", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var res = MessageBox.Show($"确认禁用计划任务 '{sel.Name}' ?", "确认", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (res != MessageBoxResult.Yes) return;
+
+            var ok = StartupManager.DisableEntry(sel);
+            if (ok)
+            {
+                LoadAllEntries();
+                SetStatus("已禁用计划任务: " + sel.Name);
+            }
+            else
+            {
+                MessageBox.Show("禁用失败", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void TaskDeleteButton_Click(object sender, RoutedEventArgs e)
+        {
+            var sel = TaskGrid.SelectedItem as StartupEntry;
+            if (sel == null)
+            {
+                MessageBox.Show("请先选择一个计划任务", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var res = MessageBox.Show($"确认删除计划任务 '{sel.Name}' ?", "确认", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (res != MessageBoxResult.Yes) return;
+
+            var ok = StartupManager.RemoveEntry(sel);
+            if (ok)
+            {
+                LoadAllEntries();
+                SetStatus("已删除计划任务: " + sel.Name);
+            }
+            else
+            {
+                MessageBox.Show("删除失败", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
     }
 }

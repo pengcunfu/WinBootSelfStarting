@@ -6,6 +6,8 @@ using Microsoft.Win32;
 using WinBootSelfStarting.Models;
 using WinBootSelfStarting.Services;
 using System.Windows.Controls;
+using System.Threading.Tasks;
+using System.Windows.Media;
 
 namespace WinBootSelfStarting
 {
@@ -17,6 +19,7 @@ namespace WinBootSelfStarting
         private List<StartupEntry> _startupEntries = new();
         private List<StartupEntry> _serviceEntries = new();
         private List<StartupEntry> _taskEntries = new();
+        private bool _isLoading = false;
 
         public MainWindow()
         {
@@ -27,7 +30,8 @@ namespace WinBootSelfStarting
             ServiceSearchBox.TextChanged += (s, e) => UpdateServiceGrid();
             TaskSearchBox.TextChanged += (s, e) => UpdateTaskGrid();
 
-            LoadAllEntries();
+            // Load data asynchronously
+            Loaded += async (s, e) => await LoadAllEntriesAsync();
         }
 
         private void SetStatus(string text)
@@ -36,11 +40,19 @@ namespace WinBootSelfStarting
                 StatusText.Text = text;
         }
 
-        private void LoadAllEntries()
+        private async Task LoadAllEntriesAsync()
         {
+            if (_isLoading) return;
+            _isLoading = true;
+
             try
             {
-                var allEntries = StartupManager.ListEntries();
+                // Show loading status
+                SetStatus("正在加载数据...");
+                SetLoadingState(true);
+
+                // Load data asynchronously
+                var allEntries = await StartupManager.ListEntriesAsync();
 
                 // Split entries by type
                 _startupEntries = allEntries.Where(e =>
@@ -52,6 +64,7 @@ namespace WinBootSelfStarting
                 _serviceEntries = allEntries.Where(e => e.Location == StartupLocation.Service).ToList();
                 _taskEntries = allEntries.Where(e => e.Location == StartupLocation.ScheduledTask).ToList();
 
+                // Update grids
                 UpdateStartupGrid();
                 UpdateServiceGrid();
                 UpdateTaskGrid();
@@ -61,6 +74,44 @@ namespace WinBootSelfStarting
             catch (Exception ex)
             {
                 MessageBox.Show("加载数据失败: " + ex.Message, "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                SetStatus("加载失败");
+            }
+            finally
+            {
+                _isLoading = false;
+                SetLoadingState(false);
+            }
+        }
+
+        private void LoadAllEntries()
+        {
+            // For backwards compatibility
+            Task.Run(async () => await LoadAllEntriesAsync());
+        }
+
+        private void SetLoadingState(bool isLoading)
+        {
+            if (isLoading)
+            {
+                // Disable controls during loading
+                StartupRefreshButton.IsEnabled = false;
+                ServiceRefreshButton.IsEnabled = false;
+                TaskRefreshButton.IsEnabled = false;
+                MainTabControl.IsEnabled = false;
+
+                // Change cursor to wait
+                Cursor = System.Windows.Input.Cursors.Wait;
+            }
+            else
+            {
+                // Enable controls after loading
+                StartupRefreshButton.IsEnabled = true;
+                ServiceRefreshButton.IsEnabled = true;
+                TaskRefreshButton.IsEnabled = true;
+                MainTabControl.IsEnabled = true;
+
+                // Restore cursor
+                Cursor = System.Windows.Input.Cursors.Arrow;
             }
         }
 
@@ -132,12 +183,12 @@ namespace WinBootSelfStarting
         }
 
         // Startup Tab handlers
-        private void StartupRefreshButton_Click(object sender, RoutedEventArgs e)
+        private async void StartupRefreshButton_Click(object sender, RoutedEventArgs e)
         {
-            LoadAllEntries();
+            await LoadAllEntriesAsync();
         }
 
-        private void StartupAddButton_Click(object sender, RoutedEventArgs e)
+        private async void StartupAddButton_Click(object sender, RoutedEventArgs e)
         {
             var dlg = new Microsoft.Win32.OpenFileDialog
             {
@@ -153,7 +204,7 @@ namespace WinBootSelfStarting
 
                 if (ok)
                 {
-                    LoadAllEntries();
+                    await LoadAllEntriesAsync();
                     SetStatus("已添加启动项: " + name);
                 }
                 else
@@ -163,7 +214,7 @@ namespace WinBootSelfStarting
             }
         }
 
-        private void StartupEnableButton_Click(object sender, RoutedEventArgs e)
+        private async void StartupEnableButton_Click(object sender, RoutedEventArgs e)
         {
             var sel = StartupGrid.SelectedItem as StartupEntry;
             if (sel == null)
@@ -175,7 +226,7 @@ namespace WinBootSelfStarting
             var ok = StartupManager.EnableEntry(sel);
             if (ok)
             {
-                LoadAllEntries();
+                await LoadAllEntriesAsync();
                 SetStatus("已启用: " + sel.Name);
             }
             else
@@ -184,7 +235,7 @@ namespace WinBootSelfStarting
             }
         }
 
-        private void StartupDisableButton_Click(object sender, RoutedEventArgs e)
+        private async void StartupDisableButton_Click(object sender, RoutedEventArgs e)
         {
             var sel = StartupGrid.SelectedItem as StartupEntry;
             if (sel == null)
@@ -196,7 +247,7 @@ namespace WinBootSelfStarting
             var ok = StartupManager.DisableEntry(sel);
             if (ok)
             {
-                LoadAllEntries();
+                await LoadAllEntriesAsync();
                 SetStatus("已禁用: " + sel.Name);
             }
             else
@@ -205,7 +256,7 @@ namespace WinBootSelfStarting
             }
         }
 
-        private void StartupRemoveButton_Click(object sender, RoutedEventArgs e)
+        private async void StartupRemoveButton_Click(object sender, RoutedEventArgs e)
         {
             var sel = StartupGrid.SelectedItem as StartupEntry;
             if (sel == null)
@@ -220,7 +271,7 @@ namespace WinBootSelfStarting
             var ok = StartupManager.RemoveEntry(sel);
             if (ok)
             {
-                LoadAllEntries();
+                await LoadAllEntriesAsync();
                 SetStatus("已删除: " + sel.Name);
             }
             else
@@ -230,12 +281,12 @@ namespace WinBootSelfStarting
         }
 
         // Service Tab handlers
-        private void ServiceRefreshButton_Click(object sender, RoutedEventArgs e)
+        private async void ServiceRefreshButton_Click(object sender, RoutedEventArgs e)
         {
-            LoadAllEntries();
+            await LoadAllEntriesAsync();
         }
 
-        private void ServiceDisableButton_Click(object sender, RoutedEventArgs e)
+        private async void ServiceDisableButton_Click(object sender, RoutedEventArgs e)
         {
             var sel = ServiceGrid.SelectedItem as StartupEntry;
             if (sel == null)
@@ -251,7 +302,7 @@ namespace WinBootSelfStarting
             var ok = StartupManager.DisableEntry(sel);
             if (ok)
             {
-                LoadAllEntries();
+                await LoadAllEntriesAsync();
                 SetStatus("已禁用服务自启: " + sel.Name);
             }
             else
@@ -260,7 +311,7 @@ namespace WinBootSelfStarting
             }
         }
 
-        private void ServiceDeleteButton_Click(object sender, RoutedEventArgs e)
+        private async void ServiceDeleteButton_Click(object sender, RoutedEventArgs e)
         {
             var sel = ServiceGrid.SelectedItem as StartupEntry;
             if (sel == null)
@@ -276,7 +327,7 @@ namespace WinBootSelfStarting
             var ok = StartupManager.RemoveEntry(sel);
             if (ok)
             {
-                LoadAllEntries();
+                await LoadAllEntriesAsync();
                 SetStatus("已删除服务: " + sel.Name);
             }
             else
@@ -286,12 +337,12 @@ namespace WinBootSelfStarting
         }
 
         // Task Tab handlers
-        private void TaskRefreshButton_Click(object sender, RoutedEventArgs e)
+        private async void TaskRefreshButton_Click(object sender, RoutedEventArgs e)
         {
-            LoadAllEntries();
+            await LoadAllEntriesAsync();
         }
 
-        private void TaskDisableButton_Click(object sender, RoutedEventArgs e)
+        private async void TaskDisableButton_Click(object sender, RoutedEventArgs e)
         {
             var sel = TaskGrid.SelectedItem as StartupEntry;
             if (sel == null)
@@ -306,7 +357,7 @@ namespace WinBootSelfStarting
             var ok = StartupManager.DisableEntry(sel);
             if (ok)
             {
-                LoadAllEntries();
+                await LoadAllEntriesAsync();
                 SetStatus("已禁用计划任务: " + sel.Name);
             }
             else
@@ -315,7 +366,7 @@ namespace WinBootSelfStarting
             }
         }
 
-        private void TaskDeleteButton_Click(object sender, RoutedEventArgs e)
+        private async void TaskDeleteButton_Click(object sender, RoutedEventArgs e)
         {
             var sel = TaskGrid.SelectedItem as StartupEntry;
             if (sel == null)
@@ -330,7 +381,7 @@ namespace WinBootSelfStarting
             var ok = StartupManager.RemoveEntry(sel);
             if (ok)
             {
-                LoadAllEntries();
+                await LoadAllEntriesAsync();
                 SetStatus("已删除计划任务: " + sel.Name);
             }
             else

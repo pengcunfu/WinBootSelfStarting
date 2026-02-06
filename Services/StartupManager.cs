@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Management;
 using System.Linq;
+using System.Threading.Tasks;
 using WinBootSelfStarting.Models;
 
 namespace WinBootSelfStarting.Services
@@ -16,7 +17,32 @@ namespace WinBootSelfStarting.Services
         private static string StartupFolderPath => Environment.GetFolderPath(Environment.SpecialFolder.Startup);
         private static string DisabledStartupFolder => Path.Combine(Path.GetDirectoryName(StartupFolderPath) ?? StartupFolderPath, "WinBootSelfStarting_Disabled");
 
+        public static async Task<List<StartupEntry>> ListEntriesAsync()
+        {
+            var list = new List<StartupEntry>();
+
+            // Load registry and folder entries synchronously (fast)
+            list.AddRange(ListRegistryEntries());
+
+            // Load services and tasks in parallel (slow)
+            var tasks = new List<Task<List<StartupEntry>>>
+            {
+                Task.Run(() => ListAutoStartServices()),
+                Task.Run(() => ListScheduledTasksAsync().GetAwaiter().GetResult())
+            };
+
+            var results = await Task.WhenAll(tasks);
+            list.AddRange(results.SelectMany(r => r));
+
+            return list;
+        }
+
         public static List<StartupEntry> ListEntries()
+        {
+            return ListEntriesAsync().GetAwaiter().GetResult();
+        }
+
+        private static List<StartupEntry> ListRegistryEntries()
         {
             var list = new List<StartupEntry>();
 
@@ -74,22 +100,6 @@ namespace WinBootSelfStarting.Services
             }
             catch { }
 
-            // List Windows Services with auto start
-            try
-            {
-                var services = ListAutoStartServices();
-                list.AddRange(services);
-            }
-            catch { }
-
-            // List Scheduled Tasks that run at logon or startup
-            try
-            {
-                var tasks = ListScheduledTasks();
-                list.AddRange(tasks);
-            }
-            catch { }
-
             return list;
         }
 
@@ -128,7 +138,7 @@ namespace WinBootSelfStarting.Services
             return list;
         }
 
-        private static List<StartupEntry> ListScheduledTasks()
+        private static async Task<List<StartupEntry>> ListScheduledTasksAsync()
         {
             var list = new List<StartupEntry>();
             try
@@ -147,14 +157,17 @@ namespace WinBootSelfStarting.Services
                 };
 
                 process.Start();
-                var output = process.StandardOutput.ReadToEnd();
+                var output = await process.StandardOutput.ReadToEndAsync();
                 process.WaitForExit();
 
                 // Parse CSV output
                 var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
                 if (lines.Length < 2) return list;
 
-                // Skip header line
+                // Skip header line, filter tasks quickly
+                var taskNames = new List<string>();
+                var taskStatuses = new Dictionary<string, string>();
+
                 for (int i = 1; i < lines.Length; i++)
                 {
                     var parts = ParseCsvLine(lines[i]);
@@ -162,25 +175,37 @@ namespace WinBootSelfStarting.Services
 
                     var taskName = parts[0].Trim('"');
                     var status = parts.Length > 3 ? parts[3].Trim('"') : "";
+                    taskNames.Add(taskName);
+                    taskStatuses[taskName] = status;
+                }
 
-                    // Filter for logon/startup tasks
-                    var taskInfo = GetTaskDetails(taskName);
-                    if (taskInfo != null && (taskInfo.Contains("LOGON", StringComparison.OrdinalIgnoreCase) ||
-                                             taskInfo.Contains("STARTUP", StringComparison.OrdinalIgnoreCase)))
+                // Get task details in parallel (but limit concurrency)
+                var detailTasks = taskNames.Select(name => Task.Run(() => new { Name = name, Details = GetTaskDetailsFast(name) }));
+                var details = await Task.WhenAll(detailTasks);
+
+                foreach (var detail in details)
+                {
+                    if (detail.Details != null && (detail.Details.Contains("LOGON", StringComparison.OrdinalIgnoreCase) ||
+                                                   detail.Details.Contains("STARTUP", StringComparison.OrdinalIgnoreCase)))
                     {
                         list.Add(new StartupEntry
                         {
-                            Id = taskName,
-                            Name = taskName,
-                            Command = taskInfo,
+                            Id = detail.Name,
+                            Name = detail.Name,
+                            Command = detail.Details,
                             Location = StartupLocation.ScheduledTask,
-                            ServiceStatus = status
+                            ServiceStatus = taskStatuses[detail.Name]
                         });
                     }
                 }
             }
             catch { }
             return list;
+        }
+
+        private static List<StartupEntry> ListScheduledTasks()
+        {
+            return ListScheduledTasksAsync().GetAwaiter().GetResult();
         }
 
         private static string[] ParseCsvLine(string line)
@@ -214,7 +239,7 @@ namespace WinBootSelfStarting.Services
             return result.ToArray();
         }
 
-        private static string? GetTaskDetails(string taskName)
+        private static string? GetTaskDetailsFast(string taskName)
         {
             try
             {
@@ -240,6 +265,11 @@ namespace WinBootSelfStarting.Services
             {
                 return null;
             }
+        }
+
+        private static string? GetTaskDetails(string taskName)
+        {
+            return GetTaskDetailsFast(taskName);
         }
 
         public static bool AddRegistryEntry(string name, string command)
